@@ -4,30 +4,17 @@
 from __future__ import (absolute_import, division,
                        print_function, unicode_literals)
 from builtins import *
+from future.standard_library import install_aliases
+install_aliases()
 
 import sys
 import pandas as pd
 from pandas import DataFrame, read_csv
-try:
-    from urllib import urlencode # python2
-except ImportError:
-    from urllib.parse import urlencode
-try:
-    from urllib import urlopen # python2
-except ImportError:
-    from urllib.request import urlopen
-try:
-    from urllib.request import Request
-except ImportError:
-    from urllib2 import Request # python2
-try:
-    from urllib.request import urlopen as urlopen2
-except ImportError:
-    from urllib2 import urlopen as urlopen2  # python2  
-try:
-    import httplib    # python2
-except:
-    from http import client as httplib
+
+from urllib.parse import urlparse, urlencode
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError
+from http import client as httplib
 
 import socket
 
@@ -38,11 +25,47 @@ try:
 except ImportError:     
     from io import BytesIO as StringIO
 
-python2 = sys.version_info[0] == 2
+import subprocess
+import codecs
+import time
 
-finam_symbols_str = urlopen('http://www.finam.ru/cache/icharts/icharts.js').readlines()
+python2 = sys.version_info[0] == 2
+download_by_wget = True
+
+def __load_url_by_wget__(url, return_string = False):
+    try:
+        subprocess.call('wget -q {} -O buffer.tmp'.format(url))
+    except FileNotFoundError as err:
+        print('wget utility not found.')
+        raise
+    with codecs.open('buffer.tmp', 'r', encoding='Windows-1251') as myfile:
+        buffer = myfile.readlines()    
+    buffer = [temp_str.encode('cp1251') for temp_str in buffer]    
+    if return_string:        
+        buffer = b"".join(buffer)
+    return buffer
+
+if download_by_wget:
+    finam_symbols_str = __load_url_by_wget__('https://www.finam.ru/cache/icharts/icharts.js')
+    #subprocess.call('wget -q https://www.finam.ru/cache/icharts/icharts.js -O icharts.js')
+    #with codecs.open('icharts.js', 'r', encoding='Windows-1251') as myfile:
+    #    finam_symbols_str = myfile.readlines()
+    #finam_symbols_str = [str.encode('cp1251') for str in finam_symbols_str]
+else:
+    #read by urllib
+    finam_symbols_str = urlopen('https://www.finam.ru/cache/icharts/icharts.js').readlines()
+    
 finam_symbols = None
 column_name_separator = '_'
+
+finam_markets = { 200 : 'МосБиржа топ',
+    1 : 'МосБиржа акции',
+    14 : 'МосБиржа фьючерсы', 41: 'Курс рубля', 45: 'МосБиржа валютный рынок',
+    2: 'МосБиржа облигации', 12: 'МосБиржа внесписочные облигации', 29: 'МосБиржа пифы',
+    8: 'Расписки', 6: 'Мировые Индексы', 24: 'Товары', 5: 'Мировые валюты', 25: 'Акции США(BATS)', 7: 'Фьючерсы США', 27: 'Отрасли экономики США',
+    26: 'Гособлигации США', 28: 'ETF', 30: 'Индексы мировой экономики', 3: 'РТС', 20: 'RTS Board', 10: 'РТС-GAZ', 17: 'ФОРТС Архив',
+    31: 'Сырье Архив', 38: 'RTS Standard Архив', 16: 'ММВБ Архив', 18: 'РТС Архив', 9: 'СПФБ Архив', 32: 'РТС-BOARD Архив',
+    39: 'Расписки Архив', -1: 'Отрасли'}
 
 def __str__(s, cp=''):
     if cp:
@@ -60,7 +83,7 @@ def __process_symbols__():
     first_chars = finam_symbols_str[0][0:len(test_string)]
     #print(finam_symbols_str[0:len(test_string)-1])
     if not __str__(first_chars) == __str__(test_string):
-        #print(finam_symbols_str[0][0:len(test_string)-1])
+        print(finam_symbols_str[0][0:len(test_string)-1])
         raise Exception('Wrong icharts.js! <{}>'.format(first_chars))
     s_id = __str__(finam_symbols_str[0])
     s_desc = __str__(finam_symbols_str[1],'cp1251')
@@ -87,6 +110,7 @@ periods = {'tick': 1, '1min': 2, '5min': 3, '10min': 4, '15min': 5,
 
 __all__ = ['periods', 'get_quotes_finam']
 
+    
 def __print__(s, verbose=False):
     if verbose:
         print(s)
@@ -156,7 +180,12 @@ def get_quotes_finam(symbol, start_date='20070101',
     end_date = datetime.strptime(end_date, "%Y%m%d").date()
     delta = end_date - start_date
     data = pd.DataFrame()
+    sleepCounter = 0 # HTTP Error 403: Forbidden
     while True:
+        sleepCounter += 1
+        if sleepCounter == 2:
+            time.sleep(1) # HTTP Error 403: Forbidden
+            sleepCounter = 0    
         delta = timedelta(100)
         if period == 'daily':
             delta = timedelta(1000) # reading parts by 1000 days
@@ -169,18 +198,30 @@ def get_quotes_finam(symbol, start_date='20070101',
             temp_end_date = end_date 
         #print(temp_end_date)
         url = __get_url__(symbol, __period__(period), start_date, temp_end_date, verbose)
+
         req = Request(url)
         req.add_header('Referer', 'http://www.finam.ru/analysis/profile0000300007/default.asp')
         try:
-            r = urlopen2(req, timeout=timeout) 
-        except socket.timeout, e:
-            raise Exception("Read quotes timeout!")            
+            r = urlopen(req, timeout=timeout) 
+        except socket.timeout:
+            raise Exception("Read quotes timeout!")
+        except HTTPError as err:
+            if err.code == 403:
+                try:
+                    time.sleep(1)
+                    r = urlopen(req, timeout=timeout)     
+                except:
+                    print(url)
+                    raise
+        except:
+            print(url)
+            raise            
         try:
             buffer = r.read()
         except httplib.IncompleteRead as e:
             buffer = e.partial
-        #print(repr(buffer[0]),ord(buffer[0]),ord('<'))
-        if buffer.strip() and not ord(buffer[0]) == ord('<'):
+        #print(repr(buffer[0]),buffer[0],ord('<'))
+        if buffer.strip() and not buffer[0] == ord('<'):
             raise Exception('Wrong server answer!')
         if buffer.strip():
             tmp_data = pd.read_csv(StringIO(buffer), index_col=0, parse_dates={'index': [0, 1]}, sep=';').sort_index()
@@ -227,12 +268,22 @@ def __get_tick_quotes_finam__(symbol, start_date, end_date, verbose=False):
     end_date = datetime.strptime(end_date, "%Y%m%d").date()
     delta = end_date - start_date
     data = DataFrame()
+    timeout = 1000
     for i in range(delta.days + 1):
         day = timedelta(i)
         url = __get_url__(symbol, periods['tick'], start_date + day, start_date + day, verbose)
         req = Request(url)
         req.add_header('Referer', 'http://www.finam.ru/analysis/profile0000300007/default.asp')
-        r = urlopen2(req)
+        try:
+            r = urlopen(req, timeout=timeout)
+        except HTTPError as err:
+            if err.code == 403:
+                try:
+                    time.sleep(3)
+                    r = urlopen(req, timeout=timeout)     
+                except:
+                    print(url)
+                    raise        
         try:
             tmp_data = read_csv(r, index_col=0, parse_dates={'index': [0, 1]}, sep=';').sort_index()
             if data.empty:
