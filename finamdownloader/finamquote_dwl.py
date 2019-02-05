@@ -3,7 +3,7 @@
 # для совместимости с версией 2
 from __future__ import (absolute_import, division,
                        print_function, unicode_literals)
-from builtins import *
+
 from future.standard_library import install_aliases
 install_aliases()
 
@@ -28,14 +28,18 @@ except ImportError:
 import subprocess
 import codecs
 import time
+import pickle
+import os
+import shutil
 
 python2 = sys.version_info[0] == 2
 download_by_wget = True
+error403SleepTime = 3
 
 def __load_url_by_wget__(url, return_string = False):
     try:
         subprocess.call('wget -q {} -O buffer.tmp'.format(url))
-    except FileNotFoundError as err:
+    except FileNotFoundError:
         print('wget utility not found.')
         raise
     with codecs.open('buffer.tmp', 'r', encoding='Windows-1251') as myfile:
@@ -180,11 +184,11 @@ def get_quotes_finam(symbol, start_date='20070101',
     end_date = datetime.strptime(end_date, "%Y%m%d").date()
     delta = end_date - start_date
     data = pd.DataFrame()
-    sleepCounter = 0 # HTTP Error 403: Forbidden
+    sleepCounter = 0 # HTTP Error 403: Forbidden timer
     while True:
         sleepCounter += 1
         if sleepCounter == 2:
-            time.sleep(1) # HTTP Error 403: Forbidden
+            time.sleep(error403SleepTime) # HTTP Error 403: Forbidden
             sleepCounter = 0    
         delta = timedelta(100)
         if period == 'daily':
@@ -208,7 +212,7 @@ def get_quotes_finam(symbol, start_date='20070101',
         except HTTPError as err:
             if err.code == 403:
                 try:
-                    time.sleep(1)
+                    time.sleep(error403SleepTime)
                     r = urlopen(req, timeout=timeout)     
                 except:
                     print(url)
@@ -279,7 +283,7 @@ def __get_tick_quotes_finam__(symbol, start_date, end_date, verbose=False):
         except HTTPError as err:
             if err.code == 403:
                 try:
-                    time.sleep(3)
+                    time.sleep(error403SleepTime)
                     r = urlopen(req, timeout=timeout)     
                 except:
                     print(url)
@@ -308,6 +312,89 @@ def __get_tick_quotes_finam_all__(symbol, start_date, end_date, verbose=False):
     pdata.columns = [symbol + column_name_separator + i for i in ['Last', 'Vol', 'Id']]
     return pdata
 
+def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[]):
+    """
+    load all minutes data to folder with filter by market or symbols to pickle files
+    path - folder for data 
+    tickers - list of instruments symbols, if markets_list is empty default market is 1
+    markets_list - list of markets, for example [1, 14, 6, 24]
+    ignore_list - list of ignore security
+    """
+    path = os.path.abspath(path)
+    if not os.path.exists(path):
+        raise Exception("Path {} not exists.".format(path))
+
+    if len(tickers) > 0 and len(markets_list) == 0:
+        markets_list = [1]
+
+    errors = []
+    for market in markets_list:
+        market_slice = finam_symbols[(finam_symbols.market == str(market))]
+        for index, row in market_slice.iterrows():
+            if index in ignore_list:
+                continue
+            symbol = str(row.code)
+            if len(tickers) > 0 and symbol not in tickers:
+                continue
+            print('downloading {}...'.format(symbol))
+            filename = '{}@finam_{}_{}'.format(path,market,symbol)
+            new_symbol = False
+            if os.path.isfile(filename + '.pickle'):
+                pass
+            try:
+                with open(filename + '.pickle','rb') as fp:
+                    quote = pickle.load(fp)
+                start_date = quote.index[-1].strftime('%Y%m%d')
+                last_date = quote.index[-1] - timedelta(1)                        
+                last_date = last_date.replace(hour=23,minute=59,second=59)
+                quote_prev = quote[:last_date]  
+            except IOError:
+                new_symbol = True
+                #raise
+            except:
+                raise Exception('Error opening pickle file! {}'.format(filename))
+            try:
+                if not new_symbol:
+                    shutil.copyfile(filename + '.pickle', filename + '.pickle.bak')
+            except:
+                raise
+            start_time = time.time()
+            while True:
+                try:
+                    quote_month = get_quotes_finam('SBER', start_date='20190101',\
+                                                period='month', verbose=False, timeout=60)                
+                    break
+                except:
+                    time.sleep(30)
+            try:
+                if new_symbol:
+                    #detect first date by getting monthly data
+                    quote_month = get_quotes_finam(symbol, start_date='19900101',\
+                                                period='month', verbose=False, timeout=60)
+                    start_date = quote_month.index[0].strftime('%Y%m%d')
+                quote = get_quotes_finam(symbol, start_date=start_date,\
+                                            period='1min', verbose=False, timeout=500)
+            except KeyboardInterrupt:
+                raise Exception('Stop by user!')
+            except:
+                print (u'{} {} {} {} error!'.format(market, symbol, row.desc, index))
+                errors.append(index)
+                time.sleep(30)
+                continue
+            if not new_symbol:
+                quote = quote_prev.append(quote) 
+            try:
+                with open(filename + '.pickle','wb') as fp:
+                    pickle.dump(quote, fp, protocol=pickle.HIGHEST_PROTOCOL)    
+            except:
+                raise
+            if not new_symbol:
+                os.remove(filename + '.pickle.bak')
+            time_delta = time.time() - start_time        
+            print(u'Complete {} {} {} ({}) {} {:.2f} sec.'.format(market, symbol, index, row.desc, \
+                                                            start_date, time_delta))
+            time.sleep(10)
+    print('Completed!')
 
 if __name__ == "__main__":
     code = 'SBER'
@@ -347,6 +434,8 @@ if __name__ == "__main__":
         if True:#ii != jj:
             print(ii, "\t", jj)
 
+
+    load_to_folder("\\ ", tickers=[code])
 
     quote = get_quotes_finam(code, start_date='20150101', period=per, verbose=True)
     print (quote.head())
