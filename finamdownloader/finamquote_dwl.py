@@ -435,7 +435,7 @@ if __name__ == "__main__":
             print(ii, "\t", jj)
 
 
-    load_to_folder("\\ ", tickers=[code])
+    load_to_folder(".\\", tickers=[code])
 
     quote = get_quotes_finam(code, start_date='20150101', period=per, verbose=True)
     print (quote.head())
