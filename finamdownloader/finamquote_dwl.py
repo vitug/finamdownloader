@@ -312,7 +312,7 @@ def __get_tick_quotes_finam_all__(symbol, start_date, end_date, verbose=False):
     pdata.columns = [symbol + column_name_separator + i for i in ['Last', 'Vol', 'Id']]
     return pdata
 
-def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[]):
+def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[], period='1min', addPeriodToFilename=False, pause=2):
     """
     load all minutes data to folder with filter by market or symbols to pickle files
     path - folder for data 
@@ -321,6 +321,7 @@ def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[]):
     ignore_list - list of ignore security
     """
     path = os.path.abspath(path)
+    path = os.path.join(path, '') # add a trailing slash
     if not os.path.exists(path):
         raise Exception("Path {} not exists.".format(path))
 
@@ -334,10 +335,14 @@ def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[]):
             if index in ignore_list:
                 continue
             symbol = str(row.code)
+            error403flag = False
             if len(tickers) > 0 and symbol not in tickers:
                 continue
             print('downloading {}...'.format(symbol))
-            filename = '{}@finam_{}_{}'.format(path,market,symbol)
+            if addPeriodToFilename:
+                filename = os.path.join(path, f'@finam_{market}_{symbol}_{period}')
+            else:
+                filename = os.path.join(path, f'@finam_{market}_{symbol}')
             new_symbol = False
             if os.path.isfile(filename + '.pickle'):
                 pass
@@ -365,7 +370,8 @@ def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[]):
                                                 period='month', verbose=False, timeout=60)                
                     break
                 except:
-                    time.sleep(30)
+                    time.sleep(error403SleepTime)
+                    error403flag = True
             try:
                 if new_symbol:
                     #detect first date by getting monthly data
@@ -373,28 +379,31 @@ def load_to_folder(path, tickers=[], markets_list=[], ignore_list=[]):
                                                 period='month', verbose=False, timeout=60)
                     start_date = quote_month.index[0].strftime('%Y%m%d')
                 quote = get_quotes_finam(symbol, start_date=start_date,\
-                                            period='1min', verbose=False, timeout=500)
+                                            period=period, verbose=False, timeout=500)
             except KeyboardInterrupt:
                 raise Exception('Stop by user!')
             except:
                 print (u'{} {} {} {} error!'.format(market, symbol, row.desc, index))
                 errors.append(index)
-                time.sleep(30)
+                time.sleep(error403SleepTime)
                 continue
             if not new_symbol:
-                quote = quote_prev.append(quote) 
+                quote = quote_prev.append(quote)
             try:
                 with open(filename + '.pickle','wb') as fp:
-                    pickle.dump(quote, fp, protocol=pickle.HIGHEST_PROTOCOL)    
+                    pickle.dump(quote, fp, protocol=pickle.HIGHEST_PROTOCOL)
             except:
                 raise
             if not new_symbol:
                 os.remove(filename + '.pickle.bak')
-            time_delta = time.time() - start_time        
-            print(u'Complete {} {} {} ({}) {} {:.2f} sec.'.format(market, symbol, index, row.desc, \
-                                                            start_date, time_delta))
-            time.sleep(10)
+            time_delta = time.time() - start_time
+            error_info = ''
+            if error403flag:
+                error_info = 'with 403 error '
+            print(f'Complete {market} {symbol} {period} {index} ({row.desc}) {error_info}{start_date} {time_delta:.2f} sec.')
+            time.sleep(pause)
     print('Completed!')
+    return errors
 
 if __name__ == "__main__":
     code = 'SBER'
@@ -435,7 +444,7 @@ if __name__ == "__main__":
             print(ii, "\t", jj)
 
 
-    load_to_folder(".\\", tickers=[code])
+    load_to_folder(".\\", tickers=[code], period='daily', addPeriodToFilename=True)
 
     quote = get_quotes_finam(code, start_date='20150101', period=per, verbose=True)
     print (quote.head())
